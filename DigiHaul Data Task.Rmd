@@ -1,0 +1,173 @@
+---
+title: "DigiHaul Data Task"
+author: "Nayyab Mir"
+date: "2024-05-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+## import packages
+library(tidyr)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(pscl)
+library(ggmap)
+library(PostcodesioR)
+library(tidygeocoder)
+library(Hmisc)
+library(terra)
+library(geosphere)
+library(randomForest)
+library(caret)
+library(pROC)
+library(caTools)
+library(ROCit)
+library(hms)
+
+```
+
+```{r}
+## call data in
+GPS_data <- read.csv("GPS_data.csv")
+shipment_bookings <- read.csv("Shipment_bookings.csv")
+new_bookings <- read.csv("New_bookings.csv")
+```
+
+```{r}
+##Q1
+
+## combine the shipment bookings and gps data files and tidy date fields
+
+combined_datasets <- left_join(shipment_bookings, GPS_data, by = "SHIPMENT_NUMBER")
+
+combined_datasets$date <- str_sub(combined_datasets$RECORD_TIMESTAMP,1,10)
+
+combined_datasets$FIRST_COLLECTION_SCHEDULE_EARLIEST <- ymd_hms(combined_datasets$FIRST_COLLECTION_SCHEDULE_EARLIEST)
+
+combined_datasets$LAST_DELIVERY_SCHEDULE_LATEST <- ymd_hms(combined_datasets$LAST_DELIVERY_SCHEDULE_LATEST)
+
+```
+
+```{r}
+
+##Q1
+
+df <- combined_datasets %>%
+  filter(date >= '2023-10-01' & date <= '2023-12-31') %>%
+  arrange(date) %>%
+  mutate(Flag = ifelse(as.POSIXct(RECORD_TIMESTAMP) < as.POSIXct(LAST_DELIVERY_SCHEDULE_LATEST) %m+%minutes(30), "Not Late", "Late"))
+
+number_of_timely_shipments <- nrow(subset(df, Flag == c("Not Late")))
+
+number_of_late_shipments <- nrow(subset(df, Flag == c("Late")))
+
+percentage_of_timely_shipments <- number_of_timely_shipments/(number_of_late_shipments + number_of_timely_shipments)*100
+
+percentage_of_timely_shipments
+
+## 84% of shipments met the on-time delivery threshold
+
+```
+
+```{r}
+
+##Q2
+
+potential_delayed <- df %>%
+  mutate(notification_needed = ifelse(RECORD_TIMESTAMP > LAST_DELIVERY_SCHEDULE_LATEST,"Yes",
+         "No"),time_of_notification = case_when(notification_needed == "Yes" ~ as.POSIXct(LAST_DELIVERY_SCHEDULE_LATEST) %m-%minutes(30),
+                                    notification_needed == "No" ~
+                                      NA))
+
+```
+
+```{r}
+
+## Exploratory Analysis
+
+## produce a bar plot showing the average delay (in hours) of deliveries
+## between 1st October and 31st December 2023
+
+potential_delayed$RECORD_TIMESTAMP <- ymd_hms(potential_delayed$RECORD_TIMESTAMP)
+potential_delayed$LAST_DELIVERY_SCHEDULE_LATEST <- ymd_hms(potential_delayed$LAST_DELIVERY_SCHEDULE_LATEST)
+potential_delayed$Month_Year <-format(as.Date(potential_delayed$date), "%Y-%m")
+
+exploratory_analysis_average_delay_of_shipments <- potential_delayed %>%
+  filter(notification_needed == "Yes") %>%
+  mutate(delay = difftime(RECORD_TIMESTAMP,LAST_DELIVERY_SCHEDULE_LATEST, units = 'hours')) %>%
+  group_by(Month_Year) %>%
+  arrange(Month_Year) %>%
+  summarise(`average delay (hours)` = mean(delay))
+
+barplot_delayed_over_time <- ggplot(exploratory_analysis_average_delay_of_shipments,aes(x=Month_Year, y=`average delay (hours)`)) + geom_bar(position = "dodge",stat = "identity") + labs(x = "YearMonth", y = "Hours") + ggtitle("Average delay of deliveries")
+
+barplot_delayed_over_time
+
+## produce a bar plot showing the percentage of on-time deliveries and late deliveries
+## between 1st October and 31st December 2023
+
+combined_datasets$Month_Year <-format(as.Date(combined_datasets$date), "%Y-%m")
+
+exploratory_analysis_over_time <- combined_datasets %>%
+  drop_na() %>%
+mutate(Flag = ifelse(as.POSIXct(RECORD_TIMESTAMP) > as.POSIXct(LAST_DELIVERY_SCHEDULE_LATEST) %m+%minutes(30), "Late", "Not Late")) %>%
+  arrange(Month_Year) %>%
+  group_by(Month_Year, Flag) %>%
+  summarise(total = n()) %>%
+  mutate(Percent = total/sum(total)) %>%
+  ungroup()
+  
+
+barplot_late_over_time <- ggplot(exploratory_analysis_over_time,aes(fill = Flag, x=Month_Year, y=Percent)) + geom_bar(position = "dodge",stat = "identity") + scale_y_continuous(labels = scales::percent) + labs(x = "YearMonth", y = "Percentage of deliveries") + ggtitle("Percentage of on-time and late deliveries")
+
+barplot_late_over_time
+```
+
+```{r}
+
+model_data <- combined_datasets %>%
+ filter(complete.cases(.)) %>%
+  na.omit() %>%
+mutate(Flag = ifelse(as.POSIXct(RECORD_TIMESTAMP) > as.POSIXct(LAST_DELIVERY_SCHEDULE_LATEST) %m+%minutes(30), 'Late', 'Not Late'))
+
+model_data$Flag <- as.factor(model_data$Flag)
+model_data$VEHICLE_SIZE <- as.factor(model_data$VEHICLE_SIZE)
+
+split <- sample.split(model_data, SplitRatio = 0.8) 
+
+train <- subset(model_data, split == 'TRUE') 
+test <- subset(model_data, split == 'FALSE') 
+
+log_model_all_variables <- glm(Flag ~ VEHICLE_SIZE + FIRST_COLLECTION_LATITUDE + FIRST_COLLECTION_LONGITUDE + LAST_DELIVERY_LATITUDE + LAST_DELIVERY_LONGITUDE, data = train, family = binomial())
+summary(log_model_all_variables)
+pR2(log_model_all_variables)
+
+contrasts(model_data$Flag)
+
+importances <- varImp(log_model_all_variables) 
+importances %>%
+  arrange(desc(Overall))
+
+testing_data <- test %>%
+  select(VEHICLE_SIZE, FIRST_COLLECTION_LATITUDE,FIRST_COLLECTION_LONGITUDE, LAST_DELIVERY_LATITUDE, LAST_DELIVERY_LONGITUDE,Flag)
+
+tested_log_model <- predict(log_model_all_variables, newdata = testing_data, type = 'response')
+# tested_log_model <- ifelse(tested_log_model > 0.5,1,0) # Probability check
+
+# roc_score=roc(testing_data[,6], tested_log_model) #AUC score
+# roc_curve <- plot(roc_score ,main ="ROC curve -- Logistic Regression ")
+
+ROCit_obj <- rocit(score=tested_log_model,class=testing_data$Flag)
+new_plot <- plot(ROCit_obj, main = "ROC curve -- Logistical Regression")
+
+new_plot
+
+new_bookings_cleaned <- new_bookings %>%
+  filter(VEHICLE_SIZE != '7.5 T')
+
+tested_new_bookings <- predict(log_model_all_variables, newdata = new_bookings_cleaned, type = 'response')
+
+```
+
