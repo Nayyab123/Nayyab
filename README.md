@@ -13,6 +13,6 @@ New_bookings.csv: contains data on new shipment bookings that the predictive mod
 
 Shipment_bookings.csv: contains historical data on shipment bookings. this data is used to train the predictive model.
 
-Pre-requisites
+##Pre-requisites
 Make sure that you have installed all the packages listed at the top of the RMarkdown file before running the script.
 
