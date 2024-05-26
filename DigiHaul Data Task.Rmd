@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-## import packages
+## import packages (download the packages via install.packages("name of package") before running
 library(tidyr)
 library(lubridate)
 library(dplyr)
@@ -52,7 +52,7 @@ combined_datasets$LAST_DELIVERY_SCHEDULE_LATEST <- ymd_hms(combined_datasets$LAS
 
 ```{r}
 
-##Q1
+##Q1 continued
 
 df <- combined_datasets %>%
   filter(date >= '2023-10-01' & date <= '2023-12-31') %>%
@@ -74,6 +74,8 @@ percentage_of_timely_shipments
 ```{r}
 
 ##Q2
+
+##added a notification field to the data set to flag whether or not the associated shippers (PROJECT_ID) require a notification regarding potential late deliveries, and the time of notification (30 minutes before the last scheduled delivery time)
 
 potential_delayed <- df %>%
   mutate(notification_needed = ifelse(RECORD_TIMESTAMP > LAST_DELIVERY_SCHEDULE_LATEST,"Yes",
@@ -105,6 +107,9 @@ barplot_delayed_over_time <- ggplot(exploratory_analysis_average_delay_of_shipme
 
 barplot_delayed_over_time
 
+ggsave("barplot_delayed_over_time.png")
+
+
 ## produce a bar plot showing the percentage of on-time deliveries and late deliveries
 ## between 1st October and 31st December 2023
 
@@ -123,9 +128,14 @@ mutate(Flag = ifelse(as.POSIXct(RECORD_TIMESTAMP) > as.POSIXct(LAST_DELIVERY_SCH
 barplot_late_over_time <- ggplot(exploratory_analysis_over_time,aes(fill = Flag, x=Month_Year, y=Percent)) + geom_bar(position = "dodge",stat = "identity") + scale_y_continuous(labels = scales::percent) + labs(x = "YearMonth", y = "Percentage of deliveries") + ggtitle("Percentage of on-time and late deliveries")
 
 barplot_late_over_time
+
+ggsave("barplot_late_over_time.png")
 ```
 
 ```{r}
+
+## Q3
+## tidy data set for modelling
 
 model_data <- combined_datasets %>%
  filter(complete.cases(.)) %>%
@@ -135,37 +145,58 @@ mutate(Flag = ifelse(as.POSIXct(RECORD_TIMESTAMP) > as.POSIXct(LAST_DELIVERY_SCH
 model_data$Flag <- as.factor(model_data$Flag)
 model_data$VEHICLE_SIZE <- as.factor(model_data$VEHICLE_SIZE)
 
+##split data into training and testing samples
+
 split <- sample.split(model_data, SplitRatio = 0.8) 
 
 train <- subset(model_data, split == 'TRUE') 
 test <- subset(model_data, split == 'FALSE') 
 
+##run logistical regression model with vehicle size, first collection latitude, first collection
+##longitude, last delivery latitude and last delivery longitude fields from data
+
 log_model_all_variables <- glm(Flag ~ VEHICLE_SIZE + FIRST_COLLECTION_LATITUDE + FIRST_COLLECTION_LONGITUDE + LAST_DELIVERY_LATITUDE + LAST_DELIVERY_LONGITUDE, data = train, family = binomial())
+
+##produce a summary of the model results
+
 summary(log_model_all_variables)
+
+##retrieve the model accuracy results
+
 pR2(log_model_all_variables)
 
-contrasts(model_data$Flag)
+##see importance ranking of predictors in model
 
 importances <- varImp(log_model_all_variables) 
 importances %>%
   arrange(desc(Overall))
 
+##select relevant fields in the testing subset for testing the model
+
 testing_data <- test %>%
   select(VEHICLE_SIZE, FIRST_COLLECTION_LATITUDE,FIRST_COLLECTION_LONGITUDE, LAST_DELIVERY_LATITUDE, LAST_DELIVERY_LONGITUDE,Flag)
 
-tested_log_model <- predict(log_model_all_variables, newdata = testing_data, type = 'response')
-# tested_log_model <- ifelse(tested_log_model > 0.5,1,0) # Probability check
+##apply model on the testing set
 
-# roc_score=roc(testing_data[,6], tested_log_model) #AUC score
-# roc_curve <- plot(roc_score ,main ="ROC curve -- Logistic Regression ")
+tested_log_model <- predict(log_model_all_variables, newdata = testing_data, type = 'response')
+
+##produce ROC curve to assess the performance of the model
 
 ROCit_obj <- rocit(score=tested_log_model,class=testing_data$Flag)
-new_plot <- plot(ROCit_obj, main = "ROC curve -- Logistical Regression")
+ROC_Curve <- plot(ROCit_obj, main = "ROC curve -- Logistical Regression")
 
-new_plot
+ROC_Curve
+
+ggsave("ROC_Curve.png")
+
+##tidy the new bookings data set, in particular we are removing the vehicle sizes which
+##do not appear in the data used to train the model
 
 new_bookings_cleaned <- new_bookings %>%
   filter(VEHICLE_SIZE != '7.5 T')
+
+##use the model to predict the likelihood (probabilities) of delay for the list of shipments
+##in the new bookings data set
 
 tested_new_bookings <- predict(log_model_all_variables, newdata = new_bookings_cleaned, type = 'response')
 
