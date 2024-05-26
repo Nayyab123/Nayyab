@@ -30,9 +30,9 @@ library(hms)
 
 ```{r}
 ## call data in
-GPS_data <- read.csv("GPS_data.csv")
-shipment_bookings <- read.csv("Shipment_bookings.csv")
-new_bookings <- read.csv("New_bookings.csv")
+GPS_data <- read.csv(paste0(getwd(),"/files/GPS_data.csv"))
+shipment_bookings <- read.csv(paste0(getwd(),"/files/Shipment_bookings.csv"))
+new_bookings <- read.csv(paste0(getwd(),"/files/New_bookings.csv"))
 ```
 
 ```{r}
